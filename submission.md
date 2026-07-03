@@ -60,3 +60,33 @@ leaving `elif days_since_last == 1:` to increment the streak on any 1-day gap re
 of the day of the week. I re-ran the full `tests/test_streaks.py` suite (5 tests) to
 confirm same-day handling, skipped-day resets, and normal weekday increments were
 unaffected — all 5 passed, including the previously-failing Sunday test.
+
+### Issue #5: The last song in a playlist never shows up
+
+**How I reproduced it:** I ran `pytest tests/test_playlists.py -v`. Two tests failed:
+`test_playlist_returns_all_songs` expected 5 songs back but got 4, and
+`test_playlist_returns_songs_in_order` showed the returned list was missing "Track 5"
+specifically — the last song by position — while the first four tracks were present
+and correctly ordered.
+
+**How I found the root cause:** I opened `services/playlist_service.py` and read
+`get_playlist_songs()`. The query itself builds the song list correctly, ordered
+ascending by `position`. The very last line of the function is
+`return [song.to_dict() for song in songs[:-1]]`. Seeing `[:-1]` applied to an
+already-correct, already-ordered list immediately explained why exactly one song —
+always the last one — was missing regardless of playlist length, which matched the
+test failures precisely.
+
+**The root cause:** The list comprehension slices the ordered `songs` list with
+`songs[:-1]`, which drops the final element before serializing to dicts. This has
+nothing to do with the SQL query or ordering logic — both are correct — it's a plain
+Python slicing mistake applied after the correct list was already built, so it silently
+discards the last song in every playlist regardless of size.
+
+**My fix and side-effect check:** I changed `songs[:-1]` to `songs`, removing the slice
+entirely so the full ordered list is returned. I re-ran `tests/test_playlists.py` (all
+3 tests, including the empty-playlist edge case) to confirm the fix and that an empty
+playlist still correctly returns `[]` rather than erroring on the removed slice. I also
+ran the full `pytest tests/` suite to confirm this change didn't affect the search or
+streak tests, since `playlist_service.py` isn't imported by either.
+
