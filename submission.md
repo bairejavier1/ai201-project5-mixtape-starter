@@ -90,3 +90,68 @@ playlist still correctly returns `[]` rather than erroring on the removed slice.
 ran the full `pytest tests/` suite to confirm this change didn't affect the search or
 streak tests, since `playlist_service.py` isn't imported by either.
 
+
+### Issue #4: I got notified when a friend added my song to a playlist but not when they rated it
+
+**How I reproduced it:** I wrote a script that created two users (a sharer and a rater)
+and one song shared by the sharer, then called `rate_song(rater.id, song.id, 5)` and
+checked `get_notifications(sharer.id)` afterward. The result was an empty list —
+`Count: 0` — confirming the sharer received no notification even though their song was
+rated by someone else.
+
+**How I found the root cause:** I opened `services/notification_service.py` and
+compared `rate_song()` against the working `add_to_playlist()` function in the same
+file, since the assignment hinted the two should be structurally similar. `add_to_playlist()`
+ends with a check (`if song.shared_by != added_by_user_id`) followed by a call to
+`create_notification()`. `rate_song()` has no equivalent check or call anywhere in its
+body — it saves or updates the `Rating` row, commits, and returns. That absence, not
+any incorrect logic, was the root cause.
+
+**The root cause:** `rate_song()` never calls `create_notification()`. Unlike
+`add_to_playlist()`, which notifies the original sharer after its main action, the
+rating flow has no notification step implemented at all. This is a missing piece of
+functionality rather than a broken comparison or off-by-one error — the sharer is
+never informed that a friend rated their song, regardless of who rates it or what score
+they give.
+
+**My fix and side-effect check:** I added a notification step immediately after the
+`db.session.commit()` in `rate_song()`, mirroring the pattern in `add_to_playlist()`:
+if the rater isn't the original sharer, call `create_notification()` with a
+`"song_rated"` type and a message naming the rater, song, and score. I re-ran my
+reproduction script and confirmed the sharer now receives exactly one notification with
+the correct body text. I also ran the full `pytest tests/` suite (all 13 tests) to
+confirm the playlist and search tests were unaffected, since they don't touch
+`rate_song()` at all.
+
+
+### Issue #2: Friends Listening Now shows people from yesterday
+
+**How I reproduced it:** I wrote a script that created two friended users, had one of
+them "listen" to a song with a `listened_at` timestamp set 20 hours in the past, and
+called `get_friends_listening_now()` for the other user. The friend appeared in the
+result with `Count: 1`, even though they hadn't listened to anything in the last 20
+hours — confirming stale activity was being shown as current.
+
+**How I found the root cause:** I opened `services/feed_service.py` and read
+`get_friends_listening_now()`. The function filters `ListeningEvent` rows using
+`listened_at >= cutoff`, where `cutoff = datetime.now(timezone.utc) - RECENT_THRESHOLD`
+and `RECENT_THRESHOLD = timedelta(hours=24)`. The filtering logic itself is correct —
+it does exactly what it says. The problem is the threshold value itself: a full 24-hour
+window is far too generous for a feature meant to show who is listening "now." I
+confirmed this by testing the boundary directly: a 20-hour-old event passed the filter
+(showed up), while reducing the threshold to 30 minutes correctly excluded it.
+
+**The root cause:** `RECENT_THRESHOLD` was set to `timedelta(hours=24)`, meaning any
+listening event from within the last full day counts as "listening now." This isn't a
+comparison or logic error — the code correctly implements a 24-hour rolling window — but
+a 24-hour window is the wrong product behavior for a "currently listening" feed, since
+it surfaces activity from many hours earlier (effectively "yesterday" from the user's
+perspective) as if it were happening right now.
+
+**My fix and side-effect check:** I changed `RECENT_THRESHOLD` from `timedelta(hours=24)`
+to `timedelta(minutes=30)`. I verified this two ways: re-running my original repro
+script confirmed the 20-hour-old event no longer appears (`Count: 0`), and a second
+script with a 5-minutes-ago event confirmed genuinely recent activity still appears
+correctly (`Count: 1`). I also ran the full `pytest tests/` suite (13 tests) to confirm
+the streak, search, and playlist tests were unaffected, since none of them touch
+`feed_service.py`.
