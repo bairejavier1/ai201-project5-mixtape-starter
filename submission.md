@@ -1,3 +1,31 @@
+## AI Usage
+
+I used Claude throughout this project for codebase navigation and debugging support,
+not for blindly generating fixes.
+
+- **Codebase orientation:** I asked Claude to read through `models.py`,
+  `notification_service.py`, and `feed_service.py` and explain what each function was
+  responsible for and how routes connected to services, before I wrote my codebase map.
+- **Root cause hypotheses:** For each bug, Claude proposed a specific root cause based
+  on reading the code (e.g., the `weekday() != 6` condition for Issue #1, the `[:-1]`
+  slice for Issue #5, the missing `create_notification()` call for Issue #4, and the
+  24-hour threshold for Issue #2). I did not accept any of these on faith — for each
+  one, I wrote and ran a reproduction script myself to confirm the bug actually behaved
+  the way Claude predicted before writing any fix.
+- **Where I had to course-correct the AI:** Claude predicted Issue #3 (duplicate search
+  results from a many-to-many join) would reproduce based on reading the code, but when
+  I actually ran `pytest tests/test_search.py`, all 5 tests passed — the bug didn't
+  reproduce in my environment (likely due to my SQLAlchemy version handling the join
+  differently than expected). Rather than force a fix for something that wasn't actually
+  broken, I dropped that issue and worked on Issue #2 instead. This is a case where the
+  AI's code-reading analysis was reasonable but incomplete without actually running the
+  code, and I had to verify it independently.
+- **Fix verification:** For every fix, I re-ran the relevant pytest suite and/or my own
+  reproduction scripts myself to confirm the behavior changed before committing. Claude
+  suggested the specific code changes, but I verified every one against real output
+  before accepting it.
+  
+
 # Mixtape — Submission
 
 ## Codebase Map
@@ -155,3 +183,17 @@ script with a 5-minutes-ago event confirmed genuinely recent activity still appe
 correctly (`Count: 1`). I also ran the full `pytest tests/` suite (13 tests) to confirm
 the streak, search, and playlist tests were unaffected, since none of them touch
 `feed_service.py`.
+
+
+## Regression Test
+
+`tests/test_streaks.py::test_streak_increments_on_sunday` verifies that listening on a
+Saturday and then the following Sunday increments the streak from 1 to 2. Against the
+original buggy code (`elif days_since_last == 1 and today.weekday() != 6:`), this test
+fails because the Sunday listen incorrectly falls through to the reset branch instead of
+incrementing. Against my fix, it passes. This test was already present in the repo
+before I started, so it would have caught this bug before it was ever introduced.
+
+`tests/test_playlists.py::test_playlist_returns_all_songs` similarly would have caught
+Issue #5 — it asserts a 5-song playlist returns all 5 songs, which fails against the
+original `songs[:-1]` slice and passes against my fix.
